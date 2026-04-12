@@ -3,7 +3,8 @@ import argparse
 import json
 import tempfile
 from pathlib import Path
-from urllib.request import urlretrieve
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 import onnx
 import onnxruntime as ort
@@ -15,27 +16,35 @@ from PytorchWildlife.models.detection.rtdetr_apache.megadetectorv6_apache import
 TEST_IMAGE_URL = "https://tse1.mm.bing.net/th/id/OIP.UMlWMVIRUuY4mFqMgD01TAHaIL?rs=1&pid=ImgDetMain&o=7&rm=3"
 
 
+def download_image(url: str, destination: Path, timeout: int = 60):
+    try:
+        with urlopen(url, timeout=timeout) as response:
+            destination.write_bytes(response.read())
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"Failed to download test image from '{url}': {exc}") from exc
+
+
 def prepare_inputs(detector: MegaDetectorV6Apache, test_image_url: str):
     with tempfile.TemporaryDirectory() as tmp_dir:
         image_path = Path(tmp_dir) / "test_image.jpg"
-        urlretrieve(test_image_url, image_path)
+        download_image(test_image_url, image_path)
         image = Image.open(image_path).convert("RGB")
         width, height = image.size
         image_tensor = detector.transform(image).unsqueeze(0)
-        orig_target_sizes = torch.tensor([[width, height]], dtype=torch.float32)
-    return image_tensor, orig_target_sizes
+        original_image_sizes = torch.tensor([[width, height]], dtype=torch.float32)
+    return image_tensor, original_image_sizes
 
 
 def export_onnx(output_path: Path, opset: int, test_image_url: str):
     detector = MegaDetectorV6Apache(device="cpu", pretrained=True, version="MDV6-apa-rtdetr-c")
     model = detector.model.eval().cpu()
 
-    image_tensor, orig_target_sizes = prepare_inputs(detector, test_image_url)
+    image_tensor, original_image_sizes = prepare_inputs(detector, test_image_url)
 
     with torch.no_grad():
         torch.onnx.export(
             model,
-            (image_tensor, orig_target_sizes),
+            (image_tensor, original_image_sizes),
             str(output_path),
             input_names=["images", "orig_target_sizes"],
             output_names=["labels", "boxes", "scores"],
@@ -59,7 +68,7 @@ def export_onnx(output_path: Path, opset: int, test_image_url: str):
         None,
         {
             "images": image_tensor.numpy(),
-            "orig_target_sizes": orig_target_sizes.numpy(),
+            "orig_target_sizes": original_image_sizes.numpy(),
         },
     )
 
