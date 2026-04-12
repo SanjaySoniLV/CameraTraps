@@ -39,9 +39,6 @@ def prepare_inputs(detector: MegaDetectorV6Apache, test_image_path: Path = None,
         if test_image_path.exists():
             image = Image.open(test_image_path).convert("RGB")
             image_source = str(test_image_path.resolve())
-        elif test_image_url is not None:
-            image = load_image_from_url(test_image_url)
-            image_source = test_image_url
         else:
             raise FileNotFoundError(f"Test image file not found: '{test_image_path}'")
     elif test_image_url is not None:
@@ -166,8 +163,8 @@ def main():
     parser.add_argument(
         "--test-image-path",
         type=Path,
-        default=DEFAULT_LOCAL_TEST_IMAGE,
-        help="Local test image path used to validate ONNX Runtime inference",
+        default=None,
+        help=f"Local test image path used to validate ONNX Runtime inference (recommended: {DEFAULT_LOCAL_TEST_IMAGE})",
     )
     parser.add_argument(
         "--test-image-url",
