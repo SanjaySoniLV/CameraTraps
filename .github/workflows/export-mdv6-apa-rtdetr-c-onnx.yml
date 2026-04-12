@@ -1,0 +1,41 @@
+name: Export MDV6 Apache RT-DETR-C to ONNX
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export-onnx:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
+          python -m pip install onnx onnxruntime
+
+      - name: Export MDV6-apa-rtdetr-c to ONNX and validate with ONNX Runtime
+        run: |
+          python scripts/export_mdv6_apa_rtdetr_c_to_onnx.py \
+            --output artifacts/mdv6-apa-rtdetr-c.onnx \
+            --summary-json artifacts/mdv6-apa-rtdetr-c-summary.json
+
+      - name: Upload ONNX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdv6-apa-rtdetr-c-onnx
+          path: |
+            artifacts/mdv6-apa-rtdetr-c.onnx
+            artifacts/mdv6-apa-rtdetr-c-summary.json
+          if-no-files-found: error
