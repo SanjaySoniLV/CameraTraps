@@ -36,7 +36,7 @@ jobs:
             --test-image-path IMG-20260410-WA0011.jpg \
             --summary-json artifacts/mdv6-apa-rtdetr-c-summary.json
 
-      - name: Upload ONNX artifact
+      - name: Upload ONNX artifacts
         # if: always() ensures the ONNX file is uploaded for manual inspection even
         # when the export/validation step above exits with an error.
         if: always()
@@ -44,6 +44,8 @@ jobs:
         with:
           name: mdv6-apa-rtdetr-c-onnx
           path: |
-            artifacts/mdv6-apa-rtdetr-c.onnx
+            artifacts/mdv6-apa-rtdetr-c.onnx*
+            artifacts/mdv6-apa-rtdetr-c*.data
+            artifacts/mdv6-apa-rtdetr-c*.weights
             artifacts/mdv6-apa-rtdetr-c-summary.json
           if-no-files-found: warn
