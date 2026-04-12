@@ -23,12 +23,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install -e .
-          python -m pip install onnx onnxruntime
+          python -m pip install onnx onnxruntime onnxscript
 
       - name: Export MDV6-apa-rtdetr-c to ONNX and validate with ONNX Runtime
         run: |
           python scripts/export_mdv6_apa_rtdetr_c_to_onnx.py \
             --output artifacts/mdv6-apa-rtdetr-c.onnx \
+            --test-image-path IMG-20260410-WA0011.jpg \
             --summary-json artifacts/mdv6-apa-rtdetr-c-summary.json
 
       - name: Upload ONNX artifact
