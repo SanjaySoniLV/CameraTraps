@@ -26,25 +26,27 @@ def download_image(url: str, destination: Path, timeout: int = 60):
         raise RuntimeError(f"Failed to download test image from '{url}': {exc}") from exc
 
 
+def load_image_from_url(url: str):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        image_path = Path(tmp_dir) / "test_image.jpg"
+        download_image(url, image_path)
+        image = Image.open(image_path).convert("RGB")
+    return image
+
+
 def prepare_inputs(detector: MegaDetectorV6Apache, test_image_path: Path = None, test_image_url: str = None):
     if test_image_path is not None:
         if test_image_path.exists():
             image = Image.open(test_image_path).convert("RGB")
             image_source = str(test_image_path.resolve())
         elif test_image_url is not None:
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                image_path = Path(tmp_dir) / "test_image.jpg"
-                download_image(test_image_url, image_path)
-                image = Image.open(image_path).convert("RGB")
-                image_source = test_image_url
+            image = load_image_from_url(test_image_url)
+            image_source = test_image_url
         else:
             raise FileNotFoundError(f"Test image file not found: '{test_image_path}'")
     elif test_image_url is not None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            image_path = Path(tmp_dir) / "test_image.jpg"
-            download_image(test_image_url, image_path)
-            image = Image.open(image_path).convert("RGB")
-            image_source = test_image_url
+        image = load_image_from_url(test_image_url)
+        image_source = test_image_url
     else:
         raise ValueError("Either test_image_path or test_image_url must be provided")
 
