@@ -31,20 +31,20 @@ def prepare_inputs(detector: MegaDetectorV6Apache, test_image_url: str):
         image = Image.open(image_path).convert("RGB")
         width, height = image.size
         image_tensor = detector.transform(image).unsqueeze(0)
-        original_image_sizes = torch.tensor([[width, height]], dtype=torch.float32)
-    return image_tensor, original_image_sizes
+        original_image_size = torch.tensor([[width, height]], dtype=torch.float32)
+    return image_tensor, original_image_size
 
 
 def export_onnx(output_path: Path, opset: int, test_image_url: str):
     detector = MegaDetectorV6Apache(device="cpu", pretrained=True, version="MDV6-apa-rtdetr-c")
     model = detector.model.eval().cpu()
 
-    image_tensor, original_image_sizes = prepare_inputs(detector, test_image_url)
+    image_tensor, original_image_size = prepare_inputs(detector, test_image_url)
 
     with torch.no_grad():
         torch.onnx.export(
             model,
-            (image_tensor, original_image_sizes),
+            (image_tensor, original_image_size),
             str(output_path),
             input_names=["images", "orig_target_sizes"],
             output_names=["labels", "boxes", "scores"],
@@ -68,7 +68,7 @@ def export_onnx(output_path: Path, opset: int, test_image_url: str):
         None,
         {
             "images": image_tensor.numpy(),
-            "orig_target_sizes": original_image_sizes.numpy(),
+            "orig_target_sizes": original_image_size.numpy(),
         },
     )
 
