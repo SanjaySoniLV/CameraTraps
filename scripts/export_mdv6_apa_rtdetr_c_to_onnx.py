@@ -157,23 +157,29 @@ def get_export_components(model_version: str):
         detector._load_model(weights=detector.weights, device=detector.device, url=detector.url)
 
         class YOLOMITExportWrapper(nn.Module):
-            def __init__(self, model, post_process):
+            def __init__(self, model, converter):
                 super().__init__()
                 self.model = model
-                self.post_process = post_process
+                self.converter = converter
 
             def forward(self, images, rev_tensor):
                 predict = self.model(images)
-                det_results = self.post_process(predict, rev_tensor)
-                return det_results[0]
+                prediction = self.converter(predict["Main"])
+                pred_class, _ignored_anchor_scores, pred_bbox = prediction[:3]
+                if rev_tensor is not None:
+                    scale = rev_tensor[:, 0:1, None]
+                    offset = rev_tensor[:, None, 1:]
+                    pred_bbox = (pred_bbox - offset) / scale
+                return pred_class, pred_bbox
 
-        model = YOLOMITExportWrapper(detector.model, detector.post_proccess).eval().cpu()
+        model = YOLOMITExportWrapper(detector.model, detector.converter).eval().cpu()
         input_names = ["images", "rev_tensor"]
-        output_names = ["detections"]
+        output_names = ["raw_class_logits", "raw_boxes"]
         dynamic_axes = {
             "images": {0: "batch_size"},
             "rev_tensor": {0: "batch_size"},
-            "detections": {0: "num_detections"},
+            "raw_class_logits": {0: "batch_size", 1: "num_candidates"},
+            "raw_boxes": {0: "batch_size", 1: "num_candidates"},
         }
 
         def prepare(det, image):

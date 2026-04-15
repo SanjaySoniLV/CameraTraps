@@ -37,10 +37,6 @@ jobs:
           python -m pip install onnx onnxruntime onnxscript
 
       - name: Export ${{ matrix.model }} to ONNX and validate with ONNX Runtime
-        # continue-on-error keeps the job alive so the artifact upload step below can
-        # always run even when validation reports a mismatch.  The exit code and any
-        # warnings are still visible in the step log.
-        continue-on-error: true
         run: |
           python scripts/export_mdv6_apa_rtdetr_c_to_onnx.py \
             --model "${{ matrix.model }}" \
