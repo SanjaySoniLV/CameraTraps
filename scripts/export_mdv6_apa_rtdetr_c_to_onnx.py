@@ -167,7 +167,9 @@ def get_export_components(model_version: str):
                 prediction = self.converter(predict["Main"])
                 pred_class, _, pred_bbox = prediction[:3]
                 if rev_tensor is not None:
-                    pred_bbox = (pred_bbox - rev_tensor[:, None, 1:]) / rev_tensor[:, 0:1, None]
+                    scale = rev_tensor[:, 0:1, None]
+                    offset = rev_tensor[:, None, 1:]
+                    pred_bbox = (pred_bbox - offset) / scale
                 return pred_class, pred_bbox
 
         model = YOLOMITExportWrapper(detector.model, detector.converter).eval().cpu()
