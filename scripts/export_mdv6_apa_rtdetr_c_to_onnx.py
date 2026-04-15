@@ -154,6 +154,7 @@ def get_export_components(model_version: str):
 
     if model_version in ("MDV6-mit-yolov9-c", "MDV6-mit-yolov9-e"):
         detector = MegaDetectorV6MIT(device="cpu", pretrained=True, version=model_version)
+        detector._load_model(weights=detector.weights, device=detector.device, url=detector.url)
 
         class YOLOMITExportWrapper(nn.Module):
             def __init__(self, model, post_process):
