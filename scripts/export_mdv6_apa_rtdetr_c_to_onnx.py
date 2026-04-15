@@ -341,8 +341,8 @@ def main():
 
     summary = export_onnx(
         model_version=args.model,
-        args.output,
-        args.opset,
+        output_path=args.output,
+        opset=args.opset,
         test_image_path=args.test_image_path,
         test_image_url=effective_test_image_url,
         rtol=args.rtol,
