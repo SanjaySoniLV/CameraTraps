@@ -1,13 +1,24 @@
-name: Export MDV6 Apache RT-DETR-C to ONNX
+name: Export MegaDetector models to ONNX
 
 on:
   workflow_dispatch:
 
 jobs:
   export-onnx:
+    name: Export ${{ matrix.model }} to ONNX
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - MDV6-apa-rtdetr-c
+          - MDV6-apa-rtdetr-e
+          - MDV6-mit-yolov9-e
+          - MDV6-mit-yolov9-c
+          - mdv5a
+          - mdv5b
 
     steps:
       - name: Checkout repository
@@ -25,16 +36,17 @@ jobs:
           python -m pip install -e .
           python -m pip install onnx onnxruntime onnxscript
 
-      - name: Export MDV6-apa-rtdetr-c to ONNX and validate with ONNX Runtime
+      - name: Export ${{ matrix.model }} to ONNX and validate with ONNX Runtime
         # continue-on-error keeps the job alive so the artifact upload step below can
         # always run even when validation reports a mismatch.  The exit code and any
         # warnings are still visible in the step log.
         continue-on-error: true
         run: |
           python scripts/export_mdv6_apa_rtdetr_c_to_onnx.py \
-            --output artifacts/mdv6-apa-rtdetr-c.onnx \
+            --model "${{ matrix.model }}" \
+            --output "artifacts/${{ matrix.model }}.onnx" \
             --test-image-path IMG-20260410-WA0011.jpg \
-            --summary-json artifacts/mdv6-apa-rtdetr-c-summary.json
+            --summary-json "artifacts/${{ matrix.model }}-summary.json"
 
       - name: Upload ONNX artifacts
         # if: always() ensures the ONNX file is uploaded for manual inspection even
@@ -42,10 +54,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mdv6-apa-rtdetr-c-onnx
+          name: ${{ matrix.model }}-onnx
           path: |
-            artifacts/mdv6-apa-rtdetr-c.onnx*
-            artifacts/mdv6-apa-rtdetr-c*.data
-            artifacts/mdv6-apa-rtdetr-c*.weights
-            artifacts/mdv6-apa-rtdetr-c-summary.json
+            artifacts/${{ matrix.model }}.onnx*
+            artifacts/${{ matrix.model }}*.data
+            artifacts/${{ matrix.model }}*.weights
+            artifacts/${{ matrix.model }}-summary.json
           if-no-files-found: warn

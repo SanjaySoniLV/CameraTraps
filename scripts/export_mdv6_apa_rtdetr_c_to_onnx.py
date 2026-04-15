@@ -4,18 +4,30 @@ import json
 import numpy as np
 import tempfile
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 import onnx
 import onnxruntime as ort
 import torch
+import torch.nn as nn
 from PIL import Image
 
 from PytorchWildlife.models.detection.rtdetr_apache.megadetectorv6_apache import MegaDetectorV6Apache
+from PytorchWildlife.models.detection.ultralytics_based.megadetectorv5 import MegaDetectorV5
+from PytorchWildlife.models.detection.yolo_mit.megadetectorv6_mit import MegaDetectorV6MIT
 
 TEST_IMAGE_URL = "https://tse1.mm.bing.net/th/id/OIP.UMlWMVIRUuY4mFqMgD01TAHaIL?rs=1&pid=ImgDetMain&o=7&rm=3"
 DEFAULT_LOCAL_TEST_IMAGE = Path(__file__).resolve().parent.parent / "IMG-20260410-WA0011.jpg"
+SUPPORTED_MODELS = (
+    "MDV6-apa-rtdetr-c",
+    "MDV6-apa-rtdetr-e",
+    "MDV6-mit-yolov9-c",
+    "MDV6-mit-yolov9-e",
+    "mdv5a",
+    "mdv5b",
+)
 
 
 def download_image(url: str, destination: Path, timeout: int = 60):
@@ -54,60 +66,186 @@ def prepare_inputs(detector: MegaDetectorV6Apache, test_image_path: Path = None,
 
 
 def compare_outputs(torch_outputs, ort_outputs, rtol: float, atol: float):
-    labels_torch, boxes_torch, scores_torch = torch_outputs
-    labels_ort, boxes_ort, scores_ort = ort_outputs
+    def to_numpy_list(value: Any):
+        if isinstance(value, torch.Tensor):
+            return [value.detach().cpu().numpy()]
+        if isinstance(value, (tuple, list)):
+            flattened = []
+            for item in value:
+                flattened.extend(to_numpy_list(item))
+            return flattened
+        raise TypeError(f"Unsupported output type for comparison: {type(value)}")
 
-    labels_torch_np = labels_torch.detach().cpu().numpy()
-    boxes_torch_np = boxes_torch.detach().cpu().numpy()
-    scores_torch_np = scores_torch.detach().cpu().numpy()
+    torch_np = to_numpy_list(torch_outputs)
+    ort_np = [np.asarray(x) for x in ort_outputs]
 
-    labels_match = np.array_equal(labels_torch_np, labels_ort)
-    boxes_close = np.allclose(boxes_torch_np, boxes_ort, rtol=rtol, atol=atol)
-    scores_close = np.allclose(scores_torch_np, scores_ort, rtol=rtol, atol=atol)
+    if len(torch_np) != len(ort_np):
+        raise RuntimeError(f"Output count mismatch: torch={len(torch_np)}, ort={len(ort_np)}")
 
-    boxes_abs_diff = np.abs(boxes_torch_np - boxes_ort)
-    scores_abs_diff = np.abs(scores_torch_np - scores_ort)
+    per_output = []
+    validation_passed = True
+    for i, (torch_arr, ort_arr) in enumerate(zip(torch_np, ort_np)):
+        if torch_arr.shape != ort_arr.shape:
+            output_ok = False
+            max_abs_diff = None
+            mean_abs_diff = None
+            exact_match = False
+            allclose_match = False
+        elif np.issubdtype(torch_arr.dtype, np.integer) or np.issubdtype(torch_arr.dtype, np.bool_):
+            exact_match = bool(np.array_equal(torch_arr, ort_arr))
+            output_ok = exact_match
+            allclose_match = exact_match
+            max_abs_diff = 0.0 if output_ok else None
+            mean_abs_diff = 0.0 if output_ok else None
+        else:
+            abs_diff = np.abs(torch_arr.astype(np.float64) - ort_arr.astype(np.float64))
+            allclose_match = bool(np.allclose(torch_arr, ort_arr, rtol=rtol, atol=atol))
+            output_ok = allclose_match
+            exact_match = bool(np.array_equal(torch_arr, ort_arr))
+            max_abs_diff = float(abs_diff.max()) if abs_diff.size > 0 else 0.0
+            mean_abs_diff = float(abs_diff.mean()) if abs_diff.size > 0 else 0.0
+
+        validation_passed = validation_passed and output_ok
+        per_output.append(
+            {
+                "output_index": i,
+                "shape_torch": list(torch_arr.shape),
+                "shape_ort": list(ort_arr.shape),
+                "dtype_torch": str(torch_arr.dtype),
+                "dtype_ort": str(ort_arr.dtype),
+                "exact_match": exact_match,
+                "allclose": allclose_match,
+                "max_abs_diff": max_abs_diff,
+                "mean_abs_diff": mean_abs_diff,
+                "passed": output_ok,
+            }
+        )
 
     return {
         "rtol": rtol,
         "atol": atol,
-        "labels_exact_match": bool(labels_match),
-        "boxes_allclose": bool(boxes_close),
-        "scores_allclose": bool(scores_close),
-        "boxes_max_abs_diff": float(boxes_abs_diff.max()) if boxes_abs_diff.size > 0 else 0.0,
-        "scores_max_abs_diff": float(scores_abs_diff.max()) if scores_abs_diff.size > 0 else 0.0,
-        "boxes_mean_abs_diff": float(boxes_abs_diff.mean()) if boxes_abs_diff.size > 0 else 0.0,
-        "scores_mean_abs_diff": float(scores_abs_diff.mean()) if scores_abs_diff.size > 0 else 0.0,
+        "num_outputs": len(torch_np),
+        "per_output": per_output,
+        "validation_passed": bool(validation_passed),
     }
 
 
-def export_onnx(output_path: Path, opset: int, test_image_path: Path = None, test_image_url: str = None, rtol: float = 1e-3, atol: float = 1e-2):
-    detector = MegaDetectorV6Apache(device="cpu", pretrained=True, version="MDV6-apa-rtdetr-c")
-    model = detector.model.eval().cpu()
+def get_export_components(model_version: str):
+    if model_version in ("MDV6-apa-rtdetr-c", "MDV6-apa-rtdetr-e"):
+        detector = MegaDetectorV6Apache(device="cpu", pretrained=True, version=model_version)
+        model = detector.model.eval().cpu()
+        input_names = ["images", "orig_target_sizes"]
+        output_names = ["labels", "boxes", "scores"]
+        dynamic_axes = {
+            "images": {0: "batch_size"},
+            "orig_target_sizes": {0: "batch_size"},
+            "labels": {0: "batch_size", 1: "num_detections"},
+            "boxes": {0: "batch_size", 1: "num_detections"},
+            "scores": {0: "batch_size", 1: "num_detections"},
+        }
 
-    image_tensor, original_image_size, image_source = prepare_inputs(
-        detector,
-        test_image_path=test_image_path,
-        test_image_url=test_image_url,
-    )
+        def prepare(det, image):
+            width, height = image.size
+            image_tensor = det.transform(image).unsqueeze(0)
+            original_image_size = torch.tensor([[width, height]], dtype=torch.float32)
+            return (image_tensor, original_image_size)
+
+        return detector, model, input_names, output_names, dynamic_axes, prepare
+
+    if model_version in ("MDV6-mit-yolov9-c", "MDV6-mit-yolov9-e"):
+        detector = MegaDetectorV6MIT(device="cpu", pretrained=True, version=model_version)
+
+        class YOLOMITExportWrapper(nn.Module):
+            def __init__(self, model, post_process):
+                super().__init__()
+                self.model = model
+                self.post_process = post_process
+
+            def forward(self, images, rev_tensor):
+                predict = self.model(images)
+                det_results = self.post_process(predict, rev_tensor)
+                return det_results[0]
+
+        model = YOLOMITExportWrapper(detector.model, detector.post_proccess).eval().cpu()
+        input_names = ["images", "rev_tensor"]
+        output_names = ["detections"]
+        dynamic_axes = {
+            "images": {0: "batch_size"},
+            "rev_tensor": {0: "batch_size"},
+            "detections": {0: "num_detections"},
+        }
+
+        def prepare(det, image):
+            image_tensor, _, rev_tensor = det.transform(image)
+            return (image_tensor.unsqueeze(0), rev_tensor.unsqueeze(0))
+
+        return detector, model, input_names, output_names, dynamic_axes, prepare
+
+    if model_version in ("mdv5a", "mdv5b"):
+        detector = MegaDetectorV5(device="cpu", pretrained=True, version=model_version[-1])
+
+        class YOLOV5ExportWrapper(nn.Module):
+            def __init__(self, model):
+                super().__init__()
+                self.model = model
+
+            def forward(self, images):
+                return self.model(images)[0]
+
+        model = YOLOV5ExportWrapper(detector.model).eval().cpu()
+        input_names = ["images"]
+        output_names = ["predictions"]
+        dynamic_axes = {
+            "images": {0: "batch_size"},
+            "predictions": {0: "batch_size"},
+        }
+
+        def prepare(det, image):
+            image_np = np.asarray(image)
+            image_tensor = det.transform(image_np).unsqueeze(0)
+            return (image_tensor,)
+
+        return detector, model, input_names, output_names, dynamic_axes, prepare
+
+    raise ValueError(f"Unsupported model version '{model_version}'. Supported values: {SUPPORTED_MODELS}")
+
+
+def export_onnx(
+    model_version: str,
+    output_path: Path,
+    opset: int,
+    test_image_path: Path = None,
+    test_image_url: str = None,
+    rtol: float = 1e-3,
+    atol: float = 1e-2,
+):
+    detector, model, input_names, output_names, dynamic_axes, prepare_export_inputs = get_export_components(model_version)
+
+    if test_image_path is not None:
+        if test_image_path.exists():
+            image = Image.open(test_image_path).convert("RGB")
+            image_source = str(test_image_path.resolve())
+        else:
+            raise FileNotFoundError(f"Test image file not found: '{test_image_path}'")
+    elif test_image_url is not None:
+        image = load_image_from_url(test_image_url)
+        image_source = test_image_url
+    else:
+        raise ValueError("Either test_image_path or test_image_url must be provided")
+
+    model_inputs = prepare_export_inputs(detector, image)
 
     with torch.no_grad():
-        torch_outputs = model(image_tensor, original_image_size)
+        torch_outputs = model(*model_inputs)
 
     with torch.no_grad():
         torch.onnx.export(
             model,
-            (image_tensor, original_image_size),
+            model_inputs,
             str(output_path),
-            input_names=["images", "orig_target_sizes"],
-            output_names=["labels", "boxes", "scores"],
-            dynamic_axes={
-                "images": {0: "batch_size"},
-                "orig_target_sizes": {0: "batch_size"},
-                "labels": {0: "batch_size", 1: "num_detections"},
-                "boxes": {0: "batch_size", 1: "num_detections"},
-                "scores": {0: "batch_size", 1: "num_detections"},
-            },
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
             opset_version=opset,
             do_constant_folding=True,
         )
@@ -117,52 +255,42 @@ def export_onnx(output_path: Path, opset: int, test_image_path: Path = None, tes
 
     providers = ["CPUExecutionProvider"]
     ort_session = ort.InferenceSession(str(output_path), providers=providers)
-    ort_outputs = ort_session.run(
-        None,
-        {
-            "images": image_tensor.numpy(),
-            "orig_target_sizes": original_image_size.numpy(),
-        },
-    )
-
-    if len(ort_outputs) != 3:
-        raise RuntimeError(f"Unexpected ONNX Runtime output count: {len(ort_outputs)}")
+    ort_inputs = {
+        input_name: input_tensor.detach().cpu().numpy()
+        for input_name, input_tensor in zip(input_names, model_inputs)
+    }
+    ort_outputs = ort_session.run(None, ort_inputs)
 
     comparison = compare_outputs(torch_outputs, ort_outputs, rtol=rtol, atol=atol)
-    # Validation is intentionally non-fatal: minor numerical drift between PyTorch and
-    # ONNX Runtime on CPU (e.g. sub-pixel bounding box differences) is expected and
-    # acceptable for downstream manual inspection. The full comparison dict is always
-    # included in the returned summary so callers can decide whether drift is significant.
-    # To apply stricter checks locally, pass smaller --rtol/--atol values.
-    if not (comparison["labels_exact_match"] and comparison["boxes_allclose"] and comparison["scores_allclose"]):
+    if not comparison["validation_passed"]:
         print(
             f"WARNING: PyTorch vs ONNX Runtime output mismatch (validation warning, not a hard error): {comparison}",
             flush=True,
         )
-    comparison["validation_passed"] = (
-        comparison["labels_exact_match"] and comparison["boxes_allclose"] and comparison["scores_allclose"]
-    )
 
     return {
-        "model": "MDV6-apa-rtdetr-c",
+        "model": model_version,
         "test_image_source": image_source,
         "onnx_path": str(output_path.resolve()),
         "onnx_size_bytes": output_path.stat().st_size,
-        "outputs": {
-            "labels_shape": list(ort_outputs[0].shape),
-            "boxes_shape": list(ort_outputs[1].shape),
-            "scores_shape": list(ort_outputs[2].shape),
-        },
+        "outputs": [{"name": name, "shape": list(value.shape)} for name, value in zip(output_names, ort_outputs)],
         "comparison": comparison,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export MDV6-apa-rtdetr-c to ONNX and validate with ONNX Runtime")
+    parser = argparse.ArgumentParser(description="Export MegaDetector models to ONNX and validate with ONNX Runtime")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="MDV6-apa-rtdetr-c",
+        choices=list(SUPPORTED_MODELS),
+        help="Model to export",
+    )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("mdv6-apa-rtdetr-c.onnx"),
+        default=None,
         help="Output ONNX file path",
     )
     parser.add_argument(
@@ -206,12 +334,15 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.output is None:
+        args.output = Path(f"{args.model}.onnx")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     effective_test_image_url = args.test_image_url or TEST_IMAGE_URL
 
     summary = export_onnx(
-        args.output,
-        args.opset,
+        model_version=args.model,
+        output_path=args.output,
+        opset=args.opset,
         test_image_path=args.test_image_path,
         test_image_url=effective_test_image_url,
         rtol=args.rtol,
