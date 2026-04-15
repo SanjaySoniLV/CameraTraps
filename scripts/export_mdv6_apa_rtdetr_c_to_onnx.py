@@ -165,7 +165,7 @@ def get_export_components(model_version: str):
             def forward(self, images, rev_tensor):
                 predict = self.model(images)
                 prediction = self.converter(predict["Main"])
-                pred_class, _, pred_bbox = prediction[:3]
+                pred_class, _ignored_anchor_scores, pred_bbox = prediction[:3]
                 if rev_tensor is not None:
                     scale = rev_tensor[:, 0:1, None]
                     offset = rev_tensor[:, None, 1:]
